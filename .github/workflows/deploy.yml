@@ -1,0 +1,134 @@
+name: "Build and release"
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master # on merge to master - since master is protected
+  pull_request:
+    branches:
+      - master
+    types: [opened, reopened, synchronize]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+
+      # ==================== BUILD ==================================================
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: uv sync
+        run: uv sync --dev --frozen
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: uv run pyinstaller --onefile settings_setter.py
+
+      - name: Build (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: uv run pyinstaller --onefile settings_setter.py
+
+      - name: Md5sum - linux
+        shell: bash
+        working-directory: ./dist
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          md5sum *
+          ls -la
+
+      - name: Md5sum - windows
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        working-directory: ./dist
+        run: |
+          Get-FileHash * -Algorithm MD5
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: artifacts
+          path: dist/*
+
+  # ==================== END OF BUILD ==========================================
+
+  # ==================== RELEASE ==============================================
+
+  check_version:
+    needs: [build]
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    outputs:
+      exists: ${{ steps.checkTag.outputs.exists }}
+      versionToRelease: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "##[set-output name=version;]$(cat version.txt)"
+
+      - uses: mukunku/tag-exists-action@v1.0.0
+        id: checkTag
+        with:
+          tag: "${{ steps.version.outputs.version }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: echo ${{ steps.checkTag.outputs.exists }}
+
+  release:
+    needs: [check_version]
+    if: ${{ needs.check_version.outputs.exists == 'false' }} #Tag not exist - create it
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Print Release version
+        run: echo ${{ needs.check_version.outputs.versionToRelease }}
+
+      - uses: actions/download-artifact@v3
+        with:
+          name: artifacts
+          path: artifacts
+
+      - name: Test
+        shell: bash
+        working-directory: ./artifacts
+        run: md5sum *
+
+      - name: Create Version Tag
+        uses: negz/create-tag@v1
+        with:
+          version: "${{ needs.check_version.outputs.versionToRelease }}"
+          message: Release tag
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "${{ needs.check_version.outputs.versionToRelease }}"
+          files: |
+            artifacts/*
+          # Use personal token since GITHUB TOKEN will not trigger deploy
+          token: ${{ secrets.AERO_TOKEN }}
