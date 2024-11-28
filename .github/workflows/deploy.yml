@@ -130,5 +130,4 @@ jobs:
           tag_name: "${{ needs.check_version.outputs.versionToRelease }}"
           files: |
             artifacts/*
-          # Use personal token since GITHUB TOKEN will not trigger deploy
-          token: ${{ secrets.AERO_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
